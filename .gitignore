@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# run logs (batch.log, preview.log, …)
+*.log
+
+# Remotion: dependencies and render output
+pipeline/remotion/node_modules/
+pipeline/remotion/out/
+pipeline/remotion/dist/
+
+# Downloaded tools and licensed fonts, see README "Co není v gitu"
+tools/ffmpeg
+tools/models/
+tools/fonts/*.ttf
+tools/fonts/hagrid/
