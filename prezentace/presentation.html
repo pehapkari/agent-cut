@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Od záznamu k pipeline</title>
+<style>
+  :root {
+    --bar: #4F5B93;
+    --ink: #4E5A95;
+    --panel: #C5CFFF;
+    --title: #141F51;
+    --muted: #8a92b8;
+    --white: #fff;
+    --u: min(1vw, 1.7778vh); /* 1 % of a 16:9 stage */
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--white); color: var(--title); overflow: hidden; }
+  body {
+    font-family: "Hagrid", "Avenir Next", "Helvetica Neue", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .slide {
+    position: absolute; inset: 0;
+    display: none; flex-direction: column; justify-content: center; align-items: flex-start;
+    padding: calc(8 * var(--u)) calc(10 * var(--u));
+  }
+  .slide.active { display: flex; }
+  .slide.center { align-items: center; text-align: center; }
+  .slide.dark { background: var(--bar); color: var(--white); }
+  .slide.dark .kicker, .slide.dark .sub { color: var(--panel); }
+
+  .kicker {
+    position: absolute; top: calc(6 * var(--u)); left: calc(10 * var(--u));
+    font-size: calc(1.4 * var(--u)); letter-spacing: .2em; text-transform: uppercase; color: var(--muted);
+    font-weight: 600;
+  }
+  .big {
+    font-size: calc(9 * var(--u)); line-height: 1.05; font-weight: 800; letter-spacing: -.02em;
+  }
+  .big.xl { font-size: calc(13 * var(--u)); }
+  .big.md { font-size: calc(6.5 * var(--u)); }
+  .slogan {
+    margin-top: calc(3.5 * var(--u));
+    font-size: calc(3.2 * var(--u)); line-height: 1.25; font-weight: 600; max-width: 75%;
+  }
+  .center .slogan { max-width: none; }
+  .sub { margin-top: calc(2 * var(--u)); font-size: calc(2 * var(--u)); color: var(--muted); }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 0; }
+  .accent { color: var(--bar); }
+  .dark .accent { color: var(--panel); }
+  .dim { color: var(--panel); }
+
+  .flow { display: flex; align-items: center; gap: calc(2.5 * var(--u)); flex-wrap: wrap; }
+  .flow .arrow { color: var(--panel); font-weight: 400; font-family: system-ui, sans-serif; }
+  .flow svg { height: 1em; width: auto; }
+  .arrow { font-family: system-ui, sans-serif; }
+  .dark .flow .arrow { color: var(--panel); opacity: .7; }
+
+  .pills { display: flex; flex-wrap: wrap; gap: calc(1.4 * var(--u)); margin-top: calc(3.5 * var(--u)); }
+  .pill {
+    font-size: calc(2.6 * var(--u)); font-weight: 700;
+    padding: calc(1.2 * var(--u)) calc(2.4 * var(--u));
+    border: calc(.3 * var(--u)) solid var(--bar);
+  }
+  .pill.fill { background: var(--bar); color: var(--white); }
+  .pill.no { border-color: var(--panel); color: var(--muted); text-decoration: line-through; }
+
+  .rules { list-style: none; margin-top: calc(1 * var(--u)); }
+  .rules li {
+    font-size: calc(5 * var(--u)); font-weight: 800; line-height: 1.15;
+    padding: calc(1.6 * var(--u)) 0; border-bottom: calc(.25 * var(--u)) solid var(--panel);
+  }
+  .rules li:last-child { border-bottom: 0; }
+  .rules li span { color: var(--panel); margin-right: calc(2 * var(--u)); }
+  .rules.oneline li { font-size: calc(3.4 * var(--u)); white-space: nowrap; }
+  .rules.fix li { display: flex; align-items: baseline; font-size: calc(4.4 * var(--u)); }
+  .rules.fix small {
+    display: block; margin-top: calc(.6 * var(--u));
+    font-size: calc(2.4 * var(--u)); font-weight: 600; color: var(--bar);
+  }
+  .flow.oneline { flex-wrap: nowrap; white-space: nowrap; font-size: calc(5 * var(--u)); }
+  .slogan.wide { max-width: none; }
+  .nowrap { white-space: nowrap; }
+  .ring { margin-top: calc(3 * var(--u)); font-size: calc(4.5 * var(--u)); font-weight: 800; font-style: italic; }
+
+  .grid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: calc(4 * var(--u)) calc(6 * var(--u)); width: 100%;
+  }
+  .stat b { display: block; font-size: calc(9 * var(--u)); font-weight: 800; line-height: 1; color: var(--bar); }
+  .stat span { font-size: calc(2.2 * var(--u)); color: var(--muted); font-weight: 600; }
+
+  .steps { display: flex; gap: calc(.8 * var(--u)); margin-top: calc(4 * var(--u)); }
+  .steps i {
+    font-style: normal; font-weight: 800; font-size: calc(2.4 * var(--u));
+    width: calc(5.2 * var(--u)); height: calc(5.2 * var(--u));
+    display: grid; place-items: center; background: var(--bar); color: var(--white);
+  }
+  .steps i.stale { background: #f2c94c; color: var(--title); }
+  .steps i.miss { background: var(--white); color: var(--muted); border: calc(.25 * var(--u)) solid var(--panel); }
+
+  .slon { position: absolute; width: calc(20 * var(--u)); right: calc(8 * var(--u)); bottom: calc(7 * var(--u)); }
+  .slon.hero { position: static; width: calc(32 * var(--u)); margin-bottom: calc(4 * var(--u)); }
+  .slon.small { width: calc(9 * var(--u)); right: calc(5 * var(--u)); bottom: calc(5 * var(--u)); }
+
+  .bars::before, .bars::after {
+    content: ""; position: absolute; left: 0; right: 0; height: calc(4 * var(--u)); background: var(--bar);
+  }
+  .bars::before { top: 0; }
+  .bars::after { bottom: 0; }
+
+  /* chrome */
+  #progress { position: fixed; left: 0; bottom: 0; height: calc(.5 * var(--u)); background: var(--panel); transition: width .2s; z-index: 5; }
+  #count {
+    position: fixed; right: calc(2 * var(--u)); bottom: calc(1.6 * var(--u));
+    font-size: calc(1.3 * var(--u)); color: var(--muted); font-variant-numeric: tabular-nums; z-index: 5;
+  }
+  .notes { display: none; }
+  body.show-notes .slide.active .notes {
+    display: block; position: absolute; left: 0; right: 0; bottom: 0;
+    padding: calc(1.6 * var(--u)) calc(10 * var(--u)) calc(2.4 * var(--u));
+    background: rgba(20, 31, 81, .92); color: var(--white);
+    font: 500 calc(1.7 * var(--u))/1.45 system-ui, sans-serif; text-align: left;
+  }
+  @media print {
+    html, body { overflow: visible; height: auto; }
+    .slide { display: flex !important; position: relative; height: 100vh; page-break-after: always; }
+    #progress, #count, .notes { display: none !important; }
+  }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="slon" viewBox="1621.71 862.53 274.29 192.72"><path d="M1712.81 962.841L1736.39 1053.25H1772.83L1808.94 979.96L1769.1 923.969L1712.81 962.841Z" fill="#fff" fill-rule="evenodd" stroke="#4E5A95" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><path d="M1893.93 948.424L1852.82 1053.15H1808.67L1739.55 920.058L1772.84 864.798L1893.93 948.424Z" fill="#fff" fill-rule="evenodd" stroke="#4E5A95" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><path d="M1853.14 1053.15L1894 948.386L1808.31 1053.15H1853.14Z" fill="#fff" fill-rule="evenodd" stroke="#4E5A95" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><path d="M1772.72 864.528L1808.31 876.156V925.501L1717.16 979.908L1772.72 864.528Z" fill="#fff" fill-rule="evenodd" stroke="#4E5A95" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><path d="M1623.75 951.459L1641.8 1006.33L1625.76 1007.3C1625.76 1007.3 1623.39 952.384 1623.75 951.459Z" fill="#fff" fill-rule="evenodd" stroke="#4E5A95" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><path d="M1625.69 1007.35L1666.28 1003L1661.92 1045.93L1636.34 1032.08L1625.69 1007.35Z" fill="#fff" fill-rule="evenodd" stroke="#4E5A95" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><path d="M1692.07 997.348L1671.4 922.118L1661.99 1046.09L1692.07 997.348Z" fill="#fff" fill-rule="evenodd" stroke="#4E5A95" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><path d="M1772.72 864.753C1772.72 864.753 1746.05 918.72 1711.59 995.996C1710.64 998.128 1709.34 1007.35 1709.34 1007.35C1709.34 1019.95 1706.71 1028.59 1695.57 1028.59C1692.93 1028.59 1689.27 1027.86 1686.34 1025.51C1694.55 1023.46 1694.4 1013.06 1693.81 1009.25L1691.07 993.549L1671.65 921.622L1693.74 889.037L1772.72 864.753Z" fill="#fff" fill-rule="evenodd" stroke="#4E5A95" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><path d="M1704 958.549C1709.05 958.549 1713.14 954.454 1713.14 949.403C1713.14 944.351 1709.05 940.256 1704 940.256C1698.95 940.256 1694.85 944.351 1694.85 949.403C1694.85 954.454 1698.95 958.549 1704 958.549Z" fill="#4E5A95"/></symbol>
+</svg>
+
+<!-- 1 -->
+<section class="slide dark center">
+  <svg viewBox="0 0 274.29 192.72" class="slon hero"><use href="#slon"/></svg>
+  <div class="big md">🎙 🖥 🎥 <span class="arrow">→</span> ▶</div>
+  <p class="slogan">Jak jsem naučil agenta stříhat přednášky</p>
+  <p class="sub">Péhápkaři · agent-cut</p>
+  <aside class="notes">Kdo jsem, Péhápkaři, proč nahráváme přednášky. 11 dní, od jednoho promptu po nástroj v Rustu.</aside>
+</section>
+
+<!-- 2 -->
+<section class="slide">
+  <span class="kicker">Výchozí stav</span>
+  <div class="big flow"><span>🎙</span><span>🖥</span><span>🎥</span></div>
+  <p class="slogan">3 zdroje. 3 délky. 3 posuny.<br><span class="accent">1 přednáška = 1 večer stříhání.</span></p>
+  <aside class="notes">Mikrofon, záznam obrazovky (OBS), kamera. Ruční synchronizace a střih v DaVinci zabere večer na jednu přednášku.</aside>
+</section>
+
+<!-- 3 -->
+<section class="slide">
+  <span class="kicker">Den 1</span>
+  <div class="big md">„Jsi střihač<br>a video inženýr.“</div>
+  <p class="slogan">Jeden prompt. <span class="accent">Python + ffmpeg.</span> Každý krok zvlášť.</p>
+  <aside class="notes">Ukázat původní prompt. Cíl: opakovatelná pipeline, ne jednorázový střih.</aside>
+</section>
+
+<!-- 4 -->
+<section class="slide">
+  <span class="kicker">Pravidla, ne instrukce</span>
+  <ul class="rules">
+    <li><span>01</span>Originály nikdy neupravuj.</li>
+    <li><span>02</span>Odhadni čas.</li>
+    <li><span>03</span>Nevratné konzultuj.</li>
+  </ul>
+  <aside class="notes">Tři věty, které platily celou dobu. Agent se jich držel lépe než jakéhokoli postupu. Výsledek: 0 změněných originálů.</aside>
+</section>
+
+<!-- 5 -->
+<section class="slide center">
+  <span class="kicker">Sync + přepis</span>
+  <div class="big xl">〰 ≈ 〰</div>
+  <p class="slogan">± 1 snímek</p>
+  <p class="sub">korelace zvuku · drift hodin · Whisper lokálně</p>
+  <aside class="notes">Kamera vs. mikrofon korelací zvuku, drift hodin. Screen bez zvuku: vizuální sync přes projekci v kameře. Whisper large-v3 na Macu, časy po slovech. Ukázat offsets.json a transcript.md.</aside>
+</section>
+
+<!-- 6 -->
+<section class="slide">
+  <span class="kicker">Střih</span>
+  <div class="big md">Agent navrhne.<br><span class="accent">Člověk rozhodne.</span></div>
+  <div class="pills mono">
+    <span class="pill fill">E001 ✓</span><span class="pill fill">E002 ✓</span><span class="pill fill">E017 ✓</span><span class="pill no">E026 Q&amp;A</span>
+  </div>
+  <aside class="notes">Návrhy střihů (ticha, opakované starty vět), schválení jedním příkazem. Do DaVinci jde FCPXML: nic se nemaže, každý střih má marker s důvodem. Q&amp;A do záznamu nedáváme. Ukázat edit_plan.md → timeline v DaVinci.</aside>
+</section>
+
+<!-- 7 -->
+<section class="slide center">
+  <span class="kicker">Reels</span>
+  <div class="big xl">9 : 16</div>
+  <p class="slogan">30–60 s · obličej v záběru · titulky po slovech</p>
+  <aside class="notes">Kamera se sledováním obličeje, pod ní slajd, klíčová slova žlutě. Automatická kontrola: obličej v boxu, řádky titulků, lip-sync. Ukázat 2–3 reels.</aside>
+</section>
+
+<!-- 8 -->
+<section class="slide">
+  <span class="kicker">Iterace</span>
+  <div class="big flow"><span>◯</span><span class="arrow">→</span><span>▢</span></div>
+  <p class="slogan">Ostré hrany. Žádný fade. <span class="accent">Just cut.</span></p>
+  <p class="sub">screenshot z DaVinci + jedna věta = nejrychlejší zpětná vazba</p>
+  <aside class="notes">Kolečko → čtverec, kulaté rohy → ostré hrany, fade → střih. Detekce obličeje v 2:52 skočila z řečníka na fotky na plátně. Ukázat před/po.</aside>
+</section>
+
+<!-- 9 -->
+<section class="slide">
+  <span class="kicker">Grafika z dat</span>
+  <div class="big flow mono oneline"><span>talk.md</span><span class="arrow">→</span><svg viewBox="0 0 274.29 192.72"><use href="#slon"/></svg><span class="arrow">→</span><span>png·svg·mp4</span></div>
+  <p class="slogan wide">Žádné exporty z Figmy. <span class="accent">Data in, grafika out.</span></p>
+  <aside class="notes">event.md + talk.md + fotka. Remotion (React/SVG) vyrobí intro, outro, karty a YouTube náhledy. Remotion Studio jako živý náhled. SVG export pro pen.dev, změny zpět do kódu. Ukázat Studio.</aside>
+</section>
+
+<!-- 10 -->
+<section class="slide bars">
+  <span class="kicker">Algoritmus nečeká</span>
+  <div class="big">Prvních 5 s<br>rozhoduje.</div>
+  <div class="pills">
+    <span class="pill fill">✂ teaser</span><span class="pill">5 s znělka</span><span class="pill">přednáška</span>
+  </div>
+  <aside class="notes">Dlouhé znělky algoritmus trestá. Na začátek 5–6 vět z přednášky (cold open), znělka zkrácená na 5 s. Ukázat začátek videa na YouTube.</aside>
+</section>
+
+<!-- 11 -->
+<section class="slide">
+  <span class="kicker">Realita &gt; plán</span>
+  <ul class="rules fix">
+    <li><span>⏱</span><div>1 h limit rekordéru<small>→ krok 0 spojí části do jedné nahrávky</small></div></li>
+    <li><span>🔇</span><div>Screen bez zvuku<small>→ vizuální sync přes projekci v kameře</small></div></li>
+    <li><span>🗂</span><div>DaVinci cache podle cesty<small>→ kopie s hashem v názvu, starou nikdy nepřepsat</small></div></li>
+  </ul>
+  <aside class="notes">Rekordér dělí nahrávky po hodině → krok 0 (spojení). Záznam obrazovky bez zvuku → vizuální sync. DaVinci si pamatuje soubor podle cesty → ve videu byl starý slajd; řešení: kopie s hashem v názvu.</aside>
+</section>
+
+<!-- 12 -->
+<section class="slide">
+  <span class="kicker">Publikace</span>
+  <div class="big md">1 záznam<br><span class="accent">→ 10+ výstupů</span></div>
+  <div class="pills">
+    <span class="pill">▶ YouTube</span><span class="pill">⏱ kapitoly</span><span class="pill">📱 reels</span><span class="pill">💬 social</span><span class="pill">📝 článek</span>
+  </div>
+  <aside class="notes">Kapitoly s časy přepočtenými přes střih, teaser a intro. social.html s citáty a obrázky, article.md pro web. Hlas textů: slon (slon.md). Ukázat social.html.</aside>
+</section>
+
+<!-- 13 -->
+<section class="slide">
+  <span class="kicker">Kontext</span>
+  <div class="big md">Paměť je v repu,<br><span class="accent">ne v chatu.</span></div>
+  <div class="pills mono">
+    <span class="pill">CLAUDE.md</span><span class="pill">README</span><span class="pill">STRUCTURE</span><span class="pill fill">git</span>
+  </div>
+  <aside class="notes">Kontext docházel, sezení se střídala. Co není zapsané, další agent neví. Každé rozhodnutí hned do README nebo CLAUDE.md.</aside>
+</section>
+
+<!-- 14 -->
+<section class="slide">
+  <span class="kicker">Od skriptů k nástroji</span>
+  <div class="big mono">$ pk</div>
+  <p class="ring accent">Jedna binárka vládne všem.</p>
+  <p class="slogan wide nowrap">Rust + ratatui. <span class="accent">Člověk v TUI, agent v <span class="mono">--json</span>.</span></p>
+  <aside class="notes">Založení akce a řečníka, stav kroků 0–13, úpravy configů s kontrolou schématu, komentáře v YAML zůstanou. Ukázat pk naživo a pk status.</aside>
+</section>
+
+<!-- 15 -->
+<section class="slide">
+  <span class="kicker">Před akcí</span>
+  <div class="big md">Náhledy hotové<br><span class="accent">dřív než sraz.</span></div>
+  <div class="pills">
+    <span class="pill">🖼 karta akce</span><span class="pill">👤 karty řečníků</span><span class="pill">▶ YT náhledy</span><span class="pill">📱 Instagram</span><span class="pill fill mono">index.html</span>
+  </div>
+  <p class="sub">z event.md a talk.md · jedna HTML stránka pro člověka</p>
+  <aside class="notes">Grafiku a promo texty generujeme už z event.md a talk.md, před samotnou akcí. Krok 14 udělá rozcestník sraz-XX/index.html: všechno ke sdílení na jednom místě, obrázky ke stažení, texty ke zkopírování. Před akcí vede pozvánka, po akci výstupy přednášek (YouTube, social, článek, reels). Ukázat index.html.</aside>
+</section>
+
+<!-- 16 -->
+<section class="slide">
+  <span class="kicker">Co si odnést</span>
+  <ul class="rules oneline">
+    <li><span>→</span>Reálná data od prvního dne</li>
+    <li><span>→</span>Screenshot &gt; odstavec</li>
+    <li><span>→</span>Pravidla hned zapsat</li>
+    <li><span>→</span>Agent navrhne, člověk rozhodne</li>
+  </ul>
+  <aside class="notes">Iterovat na skutečných nahrávkách, ne na ukázkách. Malé kroky, rychlá zpětná vazba.</aside>
+</section>
+
+<!-- 17 -->
+<section class="slide dark center">
+  <svg viewBox="0 0 274.29 192.72" class="slon hero"><use href="#slon"/></svg>
+  <div class="big">Díky!</div>
+  <p class="slogan mono">github.com/pehapkari/agent-cut</p>
+  <aside class="notes">Otázky.</aside>
+</section>
+
+<div id="progress"></div>
+<div id="count"></div>
+
+<script>
+  const slides = [...document.querySelectorAll(".slide")];
+  const progress = document.getElementById("progress");
+  const count = document.getElementById("count");
+  let i = 0;
+
+  function show(n) {
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach((s, k) => s.classList.toggle("active", k === i));
+    progress.style.width = ((i + 1) / slides.length * 100) + "%";
+    count.textContent = (i + 1) + " / " + slides.length;
+    history.replaceState(null, "", "#" + (i + 1));
+  }
+
+  document.addEventListener("keydown", e => {
+    if (["ArrowRight", "ArrowDown", "PageDown", " ", "Enter"].includes(e.key)) show(i + 1);
+    else if (["ArrowLeft", "ArrowUp", "PageUp", "Backspace"].includes(e.key)) show(i - 1);
+    else if (e.key === "Home") show(0);
+    else if (e.key === "End") show(slides.length - 1);
+    else if (e.key === "f" || e.key === "F") {
+      document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+    } else if (e.key === "n" || e.key === "N") document.body.classList.toggle("show-notes");
+    else return;
+    e.preventDefault();
+  });
+  document.addEventListener("click", e => show(e.clientX > innerWidth / 3 ? i + 1 : i - 1));
+  let x0 = null;
+  document.addEventListener("touchstart", e => { x0 = e.touches[0].clientX; }, { passive: true });
+  document.addEventListener("touchend", e => {
+    if (x0 === null) return;
+    const dx = e.changedTouches[0].clientX - x0;
+    if (Math.abs(dx) > 40) show(dx < 0 ? i + 1 : i - 1);
+    x0 = null;
+  });
+
+  show((parseInt(location.hash.slice(1), 10) || 1) - 1);
+</script>
+</body>
+</html>
