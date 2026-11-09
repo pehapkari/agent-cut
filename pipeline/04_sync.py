@@ -64,10 +64,12 @@ def xcorr_peak(ref: np.ndarray, query: np.ndarray):
     return k_f, conf
 
 
-def find_offset(main: np.ndarray, path, src_dur: float) -> dict:
+def find_offset(main: np.ndarray, path, src_dur: float, qstart: float | None = None) -> dict:
     qlen = min(QUERY_LEN, src_dur)
     # start the query a bit in, the first seconds are often silence/handling
-    qstart = min(20.0, max(0.0, src_dur - qlen))
+    if qstart is None:
+        qstart = min(20.0, max(0.0, src_dur - qlen))
+    qstart = min(max(0.0, qstart), max(0.0, src_dur - qlen))
     query = load(path, qstart, qlen)
     # search with the query padded so that negative offsets are found too
     pad = np.zeros(len(query))
@@ -178,27 +180,43 @@ def main():
             result[key] = r
             continue
         log(f"{key}: global search")
-        r = find_offset(main_sig, path, dur)
-        log(f"{key}: offset {r['offset']:+.3f}s confidence {r['confidence']}")
-        # verification windows inside the overlap
+        # several query windows: the start of a source may be noise, handling,
+        # or (joined camera) a weak part recorded from far away
+        cands = [find_offset(main_sig, path, dur, q) for q in (None, dur / 2 - QUERY_LEN / 2, dur - QUERY_LEN - 20)]
+        r = max(cands, key=lambda c: c["confidence"])
+        windows = ", ".join("{:+.2f}/{}".format(c["offset"], c["confidence"]) for c in cands)
+        log(f"{key}: offset {r['offset']:+.3f}s confidence {r['confidence']} (windows: {windows})")
+        # verification windows spread over the whole overlap
         ov_start = max(0.0, -r["offset"])
         ov_end = min(dur, main_dur - r["offset"]) - CHECK_LEN - CHECK_SEARCH
-        checks = [check(main_sig, path, r["offset"], ov_start + f * (ov_end - ov_start)) for f in (0.4, 0.8)]
+        checks = [check(main_sig, path, r["offset"], ov_start + f * (ov_end - ov_start))
+                  for f in (0.05, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95)]
         for c in checks:
             log(f"{key}: check @{c['at_source']}s → {c['offset']:+.4f}s (Δ {c['delta_ms']} ms, conf {c['confidence']})")
-        # drift: linear fit through global + checks
-        xs = [r["query_start"] + r["query_len"] / 2] + [c["at_source"] + CHECK_LEN / 2 for c in checks]
-        ys = [r["offset"]] + [c["offset"] for c in checks]
-        slope = float(np.polyfit(xs, ys, 1)[0]) if len(xs) > 1 else 0.0
+        # drift: robust linear fit through the checks (the global peak is coarse);
+        # outliers (> 1 frame from the median, weak peaks) are left out
+        med = float(np.median([c["offset"] for c in checks]))
+        good = [c for c in checks if c["confidence"] > 3 and abs(c["offset"] - med) <= FRAME_TOL]
+        ref = r["query_start"] + r["query_len"] / 2
+        if len(good) >= 2:
+            xs = [c["at_source"] + CHECK_LEN / 2 for c in good]
+            slope, icpt = (float(v) for v in np.polyfit(xs, [c["offset"] for c in good], 1))
+            resid = [abs(c["offset"] - (icpt + slope * x)) for c, x in zip(good, xs)]
+            r["global_offset"] = r["offset"]
+            r["offset"] = round(icpt + slope * ref, 4)        # same convention: offset at query centre
+        else:
+            slope, resid = 0.0, [1.0]
         total_drift = slope * dur
         r.update({
             "method": "audio cross-correlation",
             "duration": round(dur, 3),
             "checks": checks,
+            "checks_used": len(good),
             "drift_ppm": round(slope * 1e6, 1),
             "drift_over_file_ms": round(total_drift * 1000, 1),
-            "ok": all(abs(c["delta_ms"]) / 1000 <= FRAME_TOL for c in checks) and r["confidence"] > 1.5,
+            "ok": bool(len(good) >= max(2, len(checks) // 2 + 1) and max(resid) <= FRAME_TOL),
         })
+        log(f"{key}: fitted offset {r['offset']:+.4f}s, drift {r['drift_ppm']} ppm, {len(good)}/{len(checks)} checks used")
         if not r["ok"]:
             log(f"WARNING: {key} sync not verified within one frame – check manually")
         result[key] = r
