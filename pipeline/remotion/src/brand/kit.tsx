@@ -86,6 +86,21 @@ export const useAsset = () => useContext(AssetUrl);
 // ---------------------------------------------------------------- text
 export const Metrics = createContext<Record<string, number>>({});
 
+// Czech typography: a number stays with the next word ("108 MB", "350 dolarů")
+// and a one-letter preposition/conjunction (v, s, z, k, o, u, a, i) with the
+// word after it – never at the end of a line. Returns the unbreakable chunks.
+const GLUE = /^(\d[\d.,]*|[vszkouaiVSZKOUAI])$/;
+export const tokens = (text: string): string[] => {
+  const out: string[] = [];
+  let glue = false;
+  for (const w of text.split(/\s+/).filter(Boolean)) {
+    if (glue && out.length) out[out.length - 1] += ` ${w}`;
+    else out.push(w);
+    glue = GLUE.test(w);
+  }
+  return out;
+};
+
 // Greedy word wrap with Hagrid advance widths (unknown glyphs ≈ 0.55 em).
 export const wrap = (
   metrics: Record<string, number>,
@@ -95,7 +110,7 @@ export const wrap = (
 ): string[] => {
   const lines: string[] = [];
   let line = "";
-  for (const word of text.split(/\s+/).filter(Boolean)) {
+  for (const word of tokens(text)) {
     const next = line ? `${line} ${word}` : word;
     if (line && width(metrics, next, size) > maxWidth) {
       lines.push(line);
@@ -121,7 +136,7 @@ export const fit = (
 ): { size: number; lines: string[] } => {
   for (const size of sizes) {
     const lines = wrap(metrics, text, size, maxWidth);
-    const longest = Math.max(...text.split(/\s+/).map((w) => width(metrics, w, size)));
+    const longest = Math.max(...tokens(text).map((w) => width(metrics, w, size)));
     const fits = lines.length <= maxLines && longest <= maxWidth && lines.length * size * lineHeight <= maxHeight;
     if (fits) return { size, lines };
   }

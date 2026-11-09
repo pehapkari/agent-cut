@@ -11,6 +11,9 @@ Analysis (face tracking, screen check) runs on proxies; render on originals.
 
   08_reels.py            render all selected
   08_reels.py 2 5        render only reels number 2 and 5
+  08_reels.py --preview  quick 540×960 preview of *all* candidates
+                         → out/reels/preview/H{n}_slug.mp4 (n = order in
+                         highlights.json); highlights.json is not touched
 """
 import json
 import re
@@ -27,6 +30,7 @@ W, H, FPS = 1080, 1920, 30
 TOP_H = 960                       # camera box height in split layout (screen goes below)
 BRAND_BG = "4F5B93"               # from the event graphics
 ACCENT = "&H003BD4FF"             # ASS BGR: #FFD43B yellow
+SCREEN_PREROLL = 60.0            # s decoded before the reel start (sparse screen frames)
 FONT = "Montserrat ExtraBold"     # tools/fonts/Montserrat-ExtraBold.ttf
 
 
@@ -76,17 +80,43 @@ def track_face(cam_t0: float, dur: float, crop_w: int, crop_h: int, face_y: floa
         keep = np.abs(xs - med) < crop_w * 0.25
         cx = np.interp(tt, ts[keep], xs[keep])
         cy = np.interp(tt, ts[keep], ys[keep])
-        # slow, smooth camera move
-        cx = gaussian_filter1d(cx, sigma=FPS * 0.8, mode="nearest")
-        cy = gaussian_filter1d(cy, sigma=FPS * 2.0, mode="nearest")
-    x = np.clip(cx - crop_w / 2, 0, src_w - crop_w)
-    y = np.clip(cy - crop_h * face_y, 0, src_h - crop_h)
-    # if the speaker stays inside a static window, don't move at all
-    if x.max() - x.min() < crop_w * 0.12:
-        x[:] = np.median(x)
-    if y.max() - y.min() < crop_h * 0.12:
-        y[:] = np.median(y)
+        # light smoothing only removes detector noise; the move itself is planned
+        cx = gaussian_filter1d(cx, sigma=FPS * 0.3, mode="nearest")
+        cy = gaussian_filter1d(cy, sigma=FPS * 0.3, mode="nearest")
+    x = cameraman(np.clip(cx - crop_w / 2, 0, src_w - crop_w), crop_w * 0.22)
+    y = cameraman(np.clip(cy - crop_h * face_y, 0, src_h - crop_h), crop_h * 0.10)
     return np.stack([x, y], axis=1).round().astype(int)
+
+
+def cameraman(pos: np.ndarray, dead: float) -> np.ndarray:
+    """Turn a per-frame target position into a calm camera path: hold still while
+    the speaker stays within ±dead of the framing, then make one eased move
+    (smoothstep, 0.6–1.4 s, starting a bit before the speaker leaves) to where
+    they settle. Constant slow drifting looks jerky after upscaling (1 px steps)."""
+    n = len(pos)
+    out = np.empty(n)
+    settle, lead = int(1.5 * FPS), int(0.3 * FPS)
+    p = float(np.median(pos[:settle]))
+    i = 0
+    while i < n:
+        if abs(pos[i] - p) <= dead:
+            out[i] = p
+            i += 1
+            continue
+        target = float(np.median(pos[i:i + settle]))
+        dist = abs(target - p)
+        T = int(np.clip(dist / (dead * 2.5), 0.6, 1.4) * FPS)
+        a = max(0, i - lead)
+        while a < i and out[a] != p:   # don't start inside the previous move
+            a += 1
+        for k in range(T):
+            if a + k >= n:
+                break
+            u = (k + 1) / T
+            out[a + k] = p + (target - p) * u * u * (3 - 2 * u)
+        p = target
+        i = a + T
+    return out
 
 
 # ------------------------------------------------------------- screen borders
@@ -147,6 +177,11 @@ def text_px(text: str) -> float:
     return _font.getlength(text) + 12          # + outline on both sides
 
 
+# Czech typography: no line/cue break after a number ("108 | MB") or after a
+# one-letter preposition/conjunction (v, s, z, k, o, u, a, i) – same as kit.tsx
+GLUE = re.compile(r"^(\d[\d.,]*|[vszkouaiVSZKOUAI])$")
+
+
 def join(ws: list[dict]) -> str:
     return " ".join(w["w"] for w in ws)
 
@@ -173,8 +208,10 @@ def cues(words: list[dict]) -> list[list[dict]]:
     out, cur = [], []
     for w in words:
         if cur and (not fits(cur + [w]) or w["s"] - cur[-1]["e"] > 0.6 or w["e"] - cur[0]["s"] > 3.2):
+            # keep "108 MB" / "v Praze" together: a glue word moves to the next cue
+            carry = [cur.pop()] if len(cur) > 1 and GLUE.match(cur[-1]["w"]) and w["s"] - cur[-1]["e"] <= 0.6 else []
             out.append(cur)
-            cur = []
+            cur = carry
         cur.append(w)
         if re.search(r"[.?!…]$", w["w"]) or (re.search(r"[,:;]$", w["w"]) and text_px(join(cur)) > MAX_LINE_PX):
             out.append(cur)
@@ -188,7 +225,8 @@ def two_lines(ws: list[dict]) -> list[list[dict]]:
     """One line if it fits, else the most balanced split into two lines."""
     if text_px(join(ws)) <= MAX_LINE_PX or len(ws) < 2:
         return [ws]
-    best = min(range(1, len(ws)), key=lambda i: max(text_px(join(ws[:i])), text_px(join(ws[i:]))))
+    splits = [i for i in range(1, len(ws)) if not GLUE.match(ws[i - 1]["w"])] or list(range(1, len(ws)))
+    best = min(splits, key=lambda i: max(text_px(join(ws[:i])), text_px(join(ws[i:]))))
     return [ws[:best], ws[best:]]
 
 
@@ -230,7 +268,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 # -------------------------------------------------------------------- render
-def render(n: int, h: dict, cfg: dict, offs: dict, probe: dict, words: list[dict]):
+def render(n: int, h: dict, cfg: dict, offs: dict, probe: dict, words: list[dict], preview: bool = False):
     a0, a1 = h["start"], h["end"]
     dur = a1 - a0
     cam_off = offset_at(offs["camera"], a0 + dur / 2)
@@ -257,9 +295,9 @@ def render(n: int, h: dict, cfg: dict, offs: dict, probe: dict, words: list[dict
     crop_h -= crop_h % 2
 
     xy = track_face(cam_t0, dur, crop_w, crop_h, face_y, cw, ch)
-    rdir = WORK / "reels"
-    rdir.mkdir(exist_ok=True)
-    stem = f"{n:02d}_{h['slug']}"
+    rdir = WORK / "reels" / ("preview" if preview else "")
+    rdir.mkdir(parents=True, exist_ok=True)
+    stem = f"H{n}_{h['slug']}" if preview else f"{n:02d}_{h['slug']}"
     cmd_file = rdir / f"{stem}.crop.txt"
     with cmd_file.open("w") as f:
         prev = None
@@ -276,14 +314,17 @@ def render(n: int, h: dict, cfg: dict, offs: dict, probe: dict, words: list[dict
                  f"scale={box_w}:{box_h}:flags=lanczos,unsharp=5:5:0.6,setsar=1[cam]")
     if layout == "split":
         sw, sh, sx, sy = screen_crop(probe["screen"]["duration"])
+        # screen recordings only store a frame when the picture changes → start
+        # decoding earlier so the slide on screen at the reel start is there
+        pre = min(SCREEN_PREROLL, max(0.0, scr_t0))
         scr_h = int(round(W * sh / sw / 2) * 2)
         fc = (f"{cam_chain};"
-              f"[1:v]fps={FPS},crop={sw}:{sh}:{sx}:{sy},scale={W}:{scr_h}:flags=lanczos,setsar=1[scr];"
+              f"[1:v]fps={FPS},trim=start={pre:.3f},setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration={dur:.3f},crop={sw}:{sh}:{sx}:{sy},scale={W}:{scr_h}:flags=lanczos,setsar=1[scr];"
               f"color=c=0x{BRAND_BG}:s={W}x{H}:r={FPS}:d={dur:.3f}[bg];"
               f"[bg][cam]overlay=0:0:shortest=1[t1];[t1][scr]overlay=0:{TOP_H}:shortest=1[t2];"
               f"[t2]ass='{ass}':fontsdir='{TOOLS / 'fonts'}'[v]")
         inputs = ["-ss", f"{cam_t0:.3f}", "-t", f"{dur:.3f}", "-i", str(src("camera")),
-                  "-ss", f"{scr_t0:.3f}", "-t", f"{dur:.3f}", "-i", str(src("screen"))]
+                  "-ss", f"{scr_t0 - pre:.3f}", "-t", f"{dur + pre:.3f}", "-i", str(src("screen"))]
         a_idx = 2
     else:
         fc = f"{cam_chain};[cam]ass='{ass}':fontsdir='{TOOLS / 'fonts'}'[v]"
@@ -292,12 +333,21 @@ def render(n: int, h: dict, cfg: dict, offs: dict, probe: dict, words: list[dict
     fc += f";[{a_idx}:a]afade=t=in:d=0.08,afade=t=out:st={dur - 0.3:.3f}:d=0.3[a]"
     inputs += ["-ss", f"{a0:.3f}", "-t", f"{dur:.3f}", "-i", str(WORK / "audio_clean.wav")]
 
-    OUT.joinpath("reels").mkdir(parents=True, exist_ok=True)
-    dst = OUT / "reels" / f"{stem}.mp4"
-    run(["ffmpeg", *inputs, "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
-         "-t", f"{dur:.3f}", "-r", str(FPS),
-         "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
-         "-profile:v", "high", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(dst)])
+    if preview:
+        # same composition, half size and a fast encode – only for picking reels
+        fc += f";[v]scale={W // 2}:{H // 2}:flags=bicubic[vo]"
+        enc = ["-map", "[vo]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-b:a", "96k"]
+    else:
+        enc = ["-map", "[v]", "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-profile:v", "high",
+               "-b:a", "192k"]
+    ddir = OUT / "reels" / ("preview" if preview else "")
+    ddir.mkdir(parents=True, exist_ok=True)
+    dst = ddir / f"{stem}.mp4"
+    run(["ffmpeg", *inputs, "-filter_complex", fc, *enc, "-map", "[a]", "-c:a", "aac",
+         "-t", f"{dur:.3f}", "-r", str(FPS), "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(dst)])
+    if preview:
+        log(f"wrote {dst.relative_to(LECTURE)}")
+        return
     h["render"] = {"file": str(dst.relative_to(LECTURE)), "layout": layout, "layout_reason": reason,
                    "camera_offset": round(cam_off, 4), "crop": [crop_w, crop_h],
                    "crop_moves": int((np.diff(xy, axis=0) != 0).any(axis=1).sum()),
@@ -336,6 +386,11 @@ def main():
     hl = load_json("highlights.json")
     words = subtitle_words(load_json("transcript.json"))
     only = {int(a) for a in sys.argv[1:] if a.isdigit()}
+    if "--preview" in sys.argv:
+        for n, h in enumerate(hl, 1):
+            if not only or n in only:
+                render(n, h, cfg, offs, probe, words, preview=True)
+        return
     sel = [h for h in hl if h.get("selected")]
     if not sel:
         raise SystemExit("no highlight has \"selected\": true in work/highlights.json")
