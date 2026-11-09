@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "sraz-XX/<řečník>/lecture.json (zdroje a technika)",
+  "type": "object",
+  "required": ["audio", "camera", "whisper_model"],
+  "$defs": {
+    "source": {
+      "description": "soubor ve složce přednášky, nebo seznam částí (krok 0 je spojí)",
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "minLength": 1},
+        {"type": "array", "items": {"type": "string"}, "minItems": 2}
+      ]
+    }
+  },
+  "properties": {
+    "title": {"type": "string"},
+    "speaker": {"type": "string"},
+    "language": {"type": "string", "pattern": "^[a-z]{2}$"},
+    "audio": {"$ref": "#/$defs/source"},
+    "screen": {"$ref": "#/$defs/source"},
+    "camera": {"$ref": "#/$defs/source"},
+    "whisper_model": {"type": "string"},
+    "whisper_prompt": {"type": "string"},
+    "projection_crop": {"type": ["string", "null"], "pattern": "^\\d+:\\d+:\\d+:\\d+$"},
+    "head_shape": {"enum": ["circle", "square"]},
+    "background_png": {"type": ["string", "null"]},
+    "intro_music": {"type": ["string", "null"]}
+  }
+}

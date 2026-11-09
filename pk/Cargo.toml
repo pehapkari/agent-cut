@@ -1,0 +1,13 @@
+[package]
+name = "pk"
+version = "0.1.0"
+edition = "2021"
+description = "Péhápkaři: akce, řečníci a stav pipeline (CLI + TUI)"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.29"
+jsonschema = { version = "0.60", default-features = false }
+ratatui = "0.30"
+serde_json = { version = "1", features = ["preserve_order"] }

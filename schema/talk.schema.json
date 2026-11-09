@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "sraz-XX/<řečník>/talk.md (front matter; text pod hlavičkou = anotace)",
+  "type": "object",
+  "required": ["speaker", "title", "photo", "order"],
+  "properties": {
+    "speaker": {"type": "string", "minLength": 1},
+    "title": {"type": "string", "minLength": 1},
+    "bio": {"type": "string", "description": "krátký popis řečníka (pozice, firma); pipeline ho zatím nepoužívá"},
+    "photo": {"type": "string", "description": "fotka řečníka ve složce přednášky"},
+    "order": {"type": "integer", "minimum": 1, "description": "pořadí v programu"},
+    "youtube": {"type": "string", "pattern": "^https://(www\\.youtube\\.com/watch\\?v=|youtu\\.be/)[\\w-]{11}"}
+  }
+}

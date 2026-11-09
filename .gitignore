@@ -19,3 +19,6 @@ tools/ffmpeg
 tools/models/
 tools/fonts/*.ttf
 tools/fonts/hagrid/
+
+# pk build
+pk/target/
