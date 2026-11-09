@@ -1,6 +1,7 @@
 """Step 6 – edit plan and FCPXML timeline.
 
   06_edit.py plan      detect cut candidates → work/edit_plan.json + work/edit_plan.md
+                       (+ out/edit_plan.html, the same for people to read)
   06_edit.py approve   mark proposals approved   (--reject E03,E07  to drop some)
   06_edit.py fcpxml    approved cuts → out/lecture.fcpxml (DaVinci Resolve)
                        (+ intro and layout track when steps 10 / 11 have run)
@@ -24,6 +25,7 @@ import subprocess
 import sys
 import unicodedata
 from fractions import Fraction
+from html import escape as hesc
 from pathlib import Path
 from urllib.parse import quote
 from xml.sax.saxutils import escape
@@ -231,6 +233,93 @@ def write_md(cuts: list[dict]):
         lines.append("")
     (WORK / "edit_plan.md").write_text("\n".join(lines))
     log("wrote work/edit_plan.md")
+    write_html(cuts)
+
+
+STATUS_CZ = {"proposed": "navrženo", "approved": "schváleno", "rejected": "odmítnuto"}
+
+PLAN_HTML = """<!doctype html>
+<html lang="cs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Návrh střihu – {title}</title>
+<style>
+:root {{ --bar: #4F5B93; --ink: #141F51; --bg: #f6f6fa; --card: #fff; --muted: #666; --cut: #b3261e; --ok: #1e7b3a; }}
+body {{ font: 16px/1.55 system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 16px; background: var(--bg); color: var(--ink); }}
+h1 {{ font-size: 1.5rem; margin: .3rem 0 .2rem; }}
+h2 {{ font-size: 1.15rem; margin: 2.2rem 0 .8rem; color: var(--bar); }}
+a {{ color: var(--bar); }}
+.meta {{ color: var(--muted); margin: 0 0 .75rem; }}
+.summary {{ display: flex; flex-wrap: wrap; gap: 12px; margin: 1rem 0; }}
+.summary div {{ background: var(--card); border: 1px solid #ddd; padding: 10px 14px; min-width: 120px; }}
+.summary b {{ display: block; font-size: 1.3rem; }}
+.cut {{ background: var(--card); border: 1px solid #ddd; border-left: 4px solid var(--bar); padding: 12px 16px; margin-bottom: 12px; }}
+.cut.rejected {{ border-left-color: #bbb; opacity: .65; }}
+.cut.approved {{ border-left-color: var(--ok); }}
+.cut header {{ display: flex; flex-wrap: wrap; gap: .3rem 1rem; align-items: baseline; margin-bottom: .4rem; }}
+.id {{ font-weight: 700; }}
+.time {{ font-variant-numeric: tabular-nums; color: var(--muted); }}
+.status {{ font-size: .85rem; padding: 0 .5rem; border-radius: 3px; background: var(--bg); }}
+.approved .status {{ color: var(--ok); }}
+.why {{ margin: 0 0 .5rem; }}
+.ctx {{ color: var(--muted); margin: 0; }}
+.ctx del {{ color: var(--cut); text-decoration-thickness: 1px; }}
+table {{ border-collapse: collapse; background: var(--card); width: 100%; font-variant-numeric: tabular-nums; }}
+td, th {{ border: 1px solid #ddd; padding: 4px 10px; text-align: left; }}
+summary {{ cursor: pointer; color: var(--bar); }}
+</style></head><body>
+<p class="meta"><a href="index.html">← {speaker}</a></p>
+<h1>Návrh střihu</h1>
+<p class="meta">{title} · časy v hlavním audiu (stejné jako v přepisu)</p>
+<div class="summary">{summary}</div>
+<p class="meta">Nic se nemaže – v timeline jsou to jen střihy s markerem, plná média zůstávají.
+Přeškrtnutý text se vystřihne. Odmítnout jde jednotlivé ID (<code>06_edit.py approve --reject=E004,E017</code>).</p>
+{body}
+</body></html>
+"""
+
+
+def write_html(cuts: list[dict]):
+    """out/edit_plan.html – the plan for people: summary, one card per cut, cut text struck through."""
+    cfg = config()
+    dur = load_json("offsets.json")["main_duration"]
+    total = sum(c["end"] - c["start"] for c in cuts if c.get("status") != "rejected")
+
+    def ctx_html(ctx: str) -> str:
+        a, _, rest = ctx.partition("[")
+        inside, _, b = rest.rpartition("]")
+        if len(inside) > 400:
+            inside = inside[:180] + " … " + inside[-180:]
+        return f"{hesc(a)}<del>{hesc(inside)}</del>{hesc(b)}"
+
+    def card(c: dict) -> str:
+        st = c.get("status", "proposed")
+        return (f'<article class="cut {st}" id="{c["id"]}"><header><span class="id">{c["id"]}</span>'
+                f'<span class="time">{tc(c["start"])} – {tc(c["end"])} · {c["end"] - c["start"]:.1f} s</span>'
+                f'<span class="status">{STATUS_CZ.get(st, st)}</span></header>'
+                f'<p class="why">{hesc(c["why"])}</p><p class="ctx">{ctx_html(c["context"])}</p></article>')
+
+    counts = {}
+    for c in cuts:
+        counts[c.get("status", "proposed")] = counts.get(c.get("status", "proposed"), 0) + 1
+    summary = [("původní délka", tc(dur)), ("ubere", tc(total)), ("výsledná délka ≈", tc(dur - total))]
+    summary += [(STATUS_CZ.get(k, k), str(v)) for k, v in counts.items()]
+    body = []
+    for t in ("trim", "tech", "slip", "repeat", "other"):
+        cs = [c for c in cuts if c["type"] == t]
+        if cs:
+            body.append(f"<h2>{TYPE_CZ.get(t, t).capitalize()} ({len(cs)})</h2>" + "".join(card(c) for c in cs))
+    pauses = [c for c in cuts if c["type"] == "pause"]
+    if pauses:
+        rows = "".join(f'<tr class="{c.get("status", "proposed")}"><td>{c["id"]}</td><td>{tc(c["start"])}</td>'
+                       f'<td>{c["end"] - c["start"]:.1f} s</td><td>{STATUS_CZ.get(c.get("status"), "")}</td></tr>'
+                       for c in pauses)
+        body.append(f"<h2>Pauzy ({len(pauses)}, ubere {sum(c['end'] - c['start'] for c in pauses):.0f} s)</h2>"
+                    f"<details><summary>Pauzy delší než 1,5 s zkrácené na {PAUSE_KEEP} s – zobrazit</summary>"
+                    f"<table><tr><th>ID</th><th>od</th><th>ubere</th><th>stav</th></tr>{rows}</table></details>")
+    OUT.mkdir(exist_ok=True)
+    (OUT / "edit_plan.html").write_text(PLAN_HTML.format(
+        title=hesc(cfg.get("title", "")), speaker=hesc(cfg.get("speaker", "")),
+        summary="".join(f"<div>{k}<b>{v}</b></div>" for k, v in summary), body="".join(body)))
+    log("wrote out/edit_plan.html")
 
 
 def approve():
@@ -242,6 +331,7 @@ def approve():
     for c in data["cuts"]:
         c["status"] = "rejected" if c["id"] in reject else "approved"
     save_json("edit_plan.json", data)
+    write_html(data["cuts"])
     log(f"approved {sum(c['status'] == 'approved' for c in data['cuts'])}, rejected {len(reject)}")
 
 

@@ -12,6 +12,7 @@
 #   7      → pick in work/highlights.md → 8 → 9
 #   ytsentences → write work/youtube.json → 12 (YouTube description)
 #   youtube: in talk.md → write work/social.json + work/article.json → 13 (publish)
+#   14 index (event hub; 11, 12 and 13 run it at the end, works on an event or talk dir)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -56,18 +57,20 @@ step() {
     3) "$PY" "$HERE/03_audio.py" ;;
     4) "$PY" "$HERE/04_sync.py" ;;
     5) "$PY" "$HERE/05_transcript.py" ;;
-    6|plan) "$PY" "$HERE/06_edit.py" plan ;;
-    approve) "$PY" "$HERE/06_edit.py" approve ;;
+    6|plan) "$PY" "$HERE/06_edit.py" plan; "$PY" "$HERE/14_index.py" ;;
+    approve) "$PY" "$HERE/06_edit.py" approve; "$PY" "$HERE/14_index.py" ;;
     fcpxml) "$PY" "$HERE/06_edit.py" fcpxml ;;
-    7) "$PY" "$HERE/07_highlights.py" ;;
+    7) "$PY" "$HERE/07_highlights.py"; "$PY" "$HERE/14_index.py" ;;
     sentences) "$PY" "$HERE/07_highlights.py" sentences ;;
-    8) "$PY" "$HERE/08_reels.py" ;;
+    8) "$PY" "$HERE/08_reels.py"; "$PY" "$HERE/07_highlights.py" ;;
+    preview) "$PY" "$HERE/08_reels.py" --preview; "$PY" "$HERE/07_highlights.py" ;;
     9) "$PY" "$HERE/09_check.py" ;;
     10|layout) "$PY" "$HERE/10_layout.py" ;;
-    11|brand|intro) "$PY" "$HERE/11_brand.py" ;;
-    12|youtube) "$PY" "$HERE/12_youtube.py" ;;
+    11|brand|intro) "$PY" "$HERE/11_brand.py"; "$PY" "$HERE/14_index.py" ;;
+    12|youtube) "$PY" "$HERE/12_youtube.py"; "$PY" "$HERE/14_index.py" ;;
     ytsentences) "$PY" "$HERE/12_youtube.py" sentences ;;
-    13|publish) "$PY" "$HERE/13_publish.py" ;;
+    13|publish) "$PY" "$HERE/13_publish.py"; "$PY" "$HERE/14_index.py" ;;
+    14|index) "$PY" "$HERE/14_index.py" ;;
     studio) "$PY" "$HERE/11_brand.py" studio ;;
     *) echo "unknown step $1"; exit 1 ;;
   esac

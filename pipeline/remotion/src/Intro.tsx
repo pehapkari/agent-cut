@@ -255,11 +255,9 @@ const Clip = ({
   const y = wipeIn ? interpolate(frame, [0, WIPE], [1080, -TBAR], ease) : -TBAR;
   // the sound ends with the line; the padded tail only carries the picture
   const end = clip.frames - (last ? CLOSE_TEASER : WIPE);
-  const vol = (f: number) =>
-    Math.min(
-      wipeIn ? interpolate(f, [0, AUDIO_FADE], [0, 1], clamp) : 1,
-      interpolate(f, [end, end + AUDIO_FADE], [1, 0], clamp),
-    );
+  // the clip's sound is cut and faded in 11_brand.py (quiet spot, silent tail);
+  // this is only a safety net after the line's end
+  const vol = (f: number) => interpolate(f, [end + AUDIO_FADE, end + 2 * AUDIO_FADE], [1, 0], clamp);
   const [sw, sh] = clip.screenSize;
   const hs = clip.headSize;
   const sx = (1920 - sw - GAP - hs) / 2;

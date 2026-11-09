@@ -1,7 +1,7 @@
 """Step 13 – texts for publishing the talk: social posts and a web article.
 
   13_publish.py social    work/social.json → out/social.html + out/social/NN_slug.png
-  13_publish.py article   work/article.json → out/article.md
+  13_publish.py article   work/article.json → out/article.md + out/article.html (preview)
   13_publish.py social-text   only the texts (keeps the rendered images)
   13_publish.py           both
 
@@ -226,7 +226,98 @@ def article():
     head = yaml.safe_dump(fm, allow_unicode=True, sort_keys=False, width=1000)
     OUT.mkdir(exist_ok=True)
     (OUT / "article.md").write_text(f"---\n{head}---\n\n" + "\n\n".join(body) + "\n")
-    log(f"wrote out/article.md ({len(data['sections'])} sections)")
+    (OUT / "article.html").write_text(article_html(fm, body))
+    log(f"wrote out/article.md + out/article.html ({len(data['sections'])} sections)")
+
+
+# ------------------------------------------------------------------ article preview
+ARTICLE_HTML = """<!doctype html>
+<html lang="cs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title} – článek</title>
+<style>
+:root {{ --bar: #4F5B93; --panel: #C5CFFF; --ink: #141F51; --bg: #f6f6fa; --card: #fff; --muted: #666; }}
+body {{ font: 18px/1.65 Georgia, serif; max-width: 760px; margin: 2rem auto; padding: 0 16px; background: var(--bg); color: var(--ink); }}
+h1, h2, .meta, .chapters, .note, .fm {{ font-family: system-ui, sans-serif; }}
+h1 {{ font-size: 2rem; line-height: 1.2; margin-bottom: .3rem; }}
+h2 {{ font-size: 1.3rem; margin: 2.5rem 0 .3rem; color: var(--bar); }}
+a {{ color: var(--bar); }}
+.meta, .note {{ color: var(--muted); margin-top: 0; font-size: .95rem; }}
+.note {{ border-left: 4px solid var(--panel); padding-left: .8rem; }}
+.player {{ position: sticky; top: 0; z-index: 1; background: var(--bg); padding: .5rem 0; }}
+.player iframe {{ width: 100%; aspect-ratio: 16 / 9; border: 0; display: block; background: #000; }}
+p.perex {{ font-size: 1.2rem; }}
+a.seek {{ font: 600 .9rem system-ui, sans-serif; text-decoration: none; background: var(--panel); padding: .1rem .5rem; }}
+code {{ font-size: .85em; background: #e8e8f0; padding: .05rem .3rem; }}
+details {{ background: var(--card); border: 1px solid #ddd; padding: .5rem 1rem; margin: 1rem 0; }}
+summary {{ cursor: pointer; color: var(--bar); font-family: system-ui, sans-serif; }}
+.chapters {{ list-style: none; padding: 0; font-size: .95rem; columns: 2 260px; }}
+.chapters span {{ display: inline-block; min-width: 3.2rem; color: var(--muted); }}
+.fm {{ font-size: .85rem; white-space: pre-wrap; overflow-x: auto; }}
+</style></head><body>
+<p class="note">Náhled článku z <a href="article.md">article.md</a>. Na webu bude vypadat podle šablony webu.</p>
+<h1>{title}</h1>
+<p class="meta">{speaker} · {event} · {date} · video {duration} · <a href="{youtube}">YouTube</a></p>
+<div class="player"><iframe id="yt" src="https://www.youtube-nocookie.com/embed/{yt_id}" title="YouTube"
+  allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe></div>
+<details><summary>Kapitoly ({n})</summary><ul class="chapters">{chapters}</ul></details>
+{body}
+<details><summary>Front matter (metadata pro web)</summary><pre class="fm">{front}</pre></details>
+<script>
+// links to the video seek the embedded player instead of leaving the page
+document.querySelectorAll('a.seek').forEach(a => a.addEventListener('click', e => {{
+  e.preventDefault();
+  document.getElementById('yt').src = 'https://www.youtube-nocookie.com/embed/{yt_id}?autoplay=1&start=' + a.dataset.t;
+}}));
+</script>
+</body></html>
+"""
+
+
+def md_inline(text: str) -> str:
+    """Inline markdown used in article.json: `code`, **bold**, [text](url)."""
+    parts = re.split(r"(`[^`]+`)", text)
+    out = []
+    for part in parts:
+        if part.startswith("`") and part.endswith("`") and len(part) > 1:
+            out.append(f"<code>{escape(part[1:-1])}</code>")
+            continue
+        h = escape(part, quote=False)
+        h = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", h)
+        h = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", lambda m: link_html(m.group(1), m.group(2)), h)
+        out.append(h)
+    return "".join(out)
+
+
+def link_html(label: str, url: str) -> str:
+    m = re.search(r"youtu\.be/[\w-]{11}\?t=(\d+)", url)
+    seek = f' class="seek" data-t="{m.group(1)}"' if m else ""
+    return f'<a href="{escape(url, quote=True)}"{seek}>{label}</a>'
+
+
+def md_blocks(md: str) -> str:
+    """Block markdown: paragraphs, ## headings, - lists (enough for article.md)."""
+    html = []
+    for block in re.split(r"\n\s*\n", md.strip()):
+        lines = block.strip().split("\n")
+        if block.startswith("## "):
+            html.append(f"<h2>{md_inline(block[3:].strip())}</h2>")
+        elif all(l.startswith("- ") for l in lines):
+            html.append("<ul>" + "".join(f"<li>{md_inline(l[2:])}</li>" for l in lines) + "</ul>")
+        else:
+            html.append(f"<p>{'<br>'.join(md_inline(l) for l in lines)}</p>")
+    return "\n".join(html)
+
+
+def article_html(fm: dict, body: list[str]) -> str:
+    perex, rest = body[0], body[1:]
+    chapters = "".join(f'<li><span>{c["time"]}</span> <a href="https://youtu.be/{fm["youtube_id"]}?t={c["seconds"]}"'
+                       f' class="seek" data-t="{c["seconds"]}">{escape(c["title"])}</a></li>' for c in fm["chapters"])
+    front = yaml.safe_dump(fm, allow_unicode=True, sort_keys=False, width=1000)
+    return ARTICLE_HTML.format(
+        title=escape(fm["title"]), speaker=escape(fm["speaker"]), event=escape(fm["event"]),
+        date=escape(fm["date"]), duration=fm["duration"], youtube=escape(fm["youtube"], quote=True),
+        yt_id=fm["youtube_id"], n=len(fm["chapters"]), chapters=chapters,
+        body=f'<p class="perex">{md_inline(perex)}</p>\n' + md_blocks("\n\n".join(rest)), front=escape(front))
 
 
 if __name__ == "__main__":

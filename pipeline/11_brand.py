@@ -43,6 +43,7 @@ TEASER_CLOSE = 15 / 30  # s – the last clip runs on while the bars close into 
 TEASER_BAR = 234        # px – the teaser's bars are twice the talk layout's (BAR in kit.tsx)
 TEASER_HEAD = 1080 - 2 * TEASER_BAR - 2 * 24  # px – speaker = slide height, ~3× the talk layout
 TEASER_GAP = 48         # px – between the slide and the speaker
+QUIET_DB = -32.0        # dB (audio_clean is loudness-normalised) – silence between words
 TEASER_ZOOM = 1.3       # head crop relative to the layout's
 STILLS = ["event-card", "speaker-card", "video-background", "youtube-thumbnail-a",
           "youtube-thumbnail-b", "instagram-speaker", "instagram-event"]
@@ -97,14 +98,19 @@ def talk_data(talk_dir: Path, slug: str) -> dict:
             "order": fm.get("order", 99)}
 
 
-def event_data(event_md: Path) -> dict:
-    fm, _ = front_matter(event_md) if event_md.exists() else ({}, "")
+def event_when_where(fm: dict) -> tuple[str, str]:
     when = where = ""
     if fm.get("date"):
         d = fm["date"] if isinstance(fm["date"], datetime.date) else datetime.date.fromisoformat(str(fm["date"]))
         when = f"{DAYS[d.weekday()]} {d.day}. {MONTHS[d.month - 1]}"
     if fm.get("time"):
         where = f"od {fm['time']}" + (f" v {fm['venue']}" if fm.get("venue") else "")
+    return when, where
+
+
+def event_data(event_md: Path) -> dict:
+    fm, _ = front_matter(event_md) if event_md.exists() else ({}, "")
+    when, where = event_when_where(fm)
     image = None
     if fm.get("image"):
         src = (event_md.parent / fm["image"]).resolve()
@@ -120,6 +126,70 @@ def event_data(event_md: Path) -> dict:
     return {"name": fm.get("name", "pražský sraz přátel PHP"), "number": fm.get("number", 0),
             "when": when, "where": where, "url": fm.get("url", "pehapkari.cz"), "image": image,
             "partner": partner}
+
+
+_WORDS: list = []
+
+
+def _words() -> list[dict]:
+    if not _WORDS:
+        _WORDS.extend(w for seg in load_json("transcript.json")["segments"] for w in seg["words"])
+    return _WORDS
+
+
+def quiet_cut(t: float, before: float, after: float) -> float:
+    """Cut point near a word boundary t from Whisper (±0.1 s off).
+    Prefers real silence: a run of ≥ 60 ms under QUIET_DB – the first one after
+    t (end of a line, before > -0.1) or the last one before t (start of a line).
+    A single quiet moment is not enough: the stop before t/k/p inside a word
+    ("dosta|ne") is silent for 40 ms. Without silence (fast speech) it falls back
+    to the quietest 60 ms spot within [t+before, t+after]."""
+    is_end = after > -before
+    lo, hi = (t + before, t + 0.5) if is_end else (t - 0.5, t + after)
+    # never into the neighbouring word (Whisper's times, a little slack)
+    ws = _words()
+    if is_end:
+        # Whisper often starts the next word early: real silence may reach a bit
+        # into it, the fallback (no silence) must not
+        nxt = [w["s"] for w in ws if w["s"] >= t - 0.02]
+        hi = min(hi, (nxt[0] + 0.25) if nxt else hi)
+        after = min(after, (nxt[0] + 0.05 - t) if nxt else after)
+    else:
+        prv = [w["e"] for w in ws if w["e"] <= t + 0.02]
+        lo = max(lo, (prv[-1] - 0.05) if prv else lo)
+    lo = max(0.0, lo)
+    raw = subprocess.run([ffmpeg_bin(), "-v", "error", "-ss", f"{lo:.3f}", "-t", f"{hi - lo:.3f}",
+                          "-i", str(WORK / "audio_clean.wav"), "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],
+                         capture_output=True, check=True).stdout
+    x = np.frombuffer(raw, np.float32).astype(np.float64)
+    n = len(x) // 320                                          # 20 ms frames
+    if n < 4:
+        return t
+    db = 10 * np.log10((x[:n * 320].reshape(n, 320) ** 2).mean(1) + 1e-12)
+    quiet = db < QUIET_DB
+    runs, i = [], 0
+    while i < n:
+        if quiet[i]:
+            j = i
+            while j < n and quiet[j]:
+                j += 1
+            if j - i >= 3:
+                runs.append((lo + i * 0.02, lo + j * 0.02))
+            i = j
+        else:
+            i += 1
+    if is_end:
+        runs = [r for r in runs if r[1] > t + before + 0.06]
+        if runs:
+            return round(max(runs[0][0], t + before) + 0.03, 3)
+    else:
+        runs = [r for r in runs if r[0] < t + after - 0.06]
+        if runs:
+            return round(min(runs[-1][1], t + after) - 0.03, 3)
+    # no silence: quietest 60 ms inside the narrow window
+    a, b = int((max(lo, t + before) - lo) / 0.02), int((min(hi, t + after) - lo) / 0.02)
+    e = np.convolve(db, np.ones(3) / 3, mode="same")[max(0, a):max(a + 1, b)]
+    return round(lo + (max(0, a) + int(np.argmin(e)) + 0.5) * 0.02, 3)
 
 
 def teaser_clips() -> list[dict]:
@@ -145,12 +215,22 @@ def teaser_clips() -> list[dict]:
     for i, c in enumerate(lines):
         # start/end are the spoken words; pad the end by the picture that runs on
         # under the transition (wipe to the next line, or the close into the sting)
-        start = c["start"]
-        dur = c["end"] + (TEASER_WIPE if i < len(lines) - 1 else TEASER_CLOSE) - start
+        # word times from Whisper are ±0.1 s; cut in the quietest spot nearby,
+        # otherwise fast speakers get chopped syllables of the neighbouring words
+        # optional "cut_start"/"cut_end" in teaser.json override the automatic choice
+        start = c.get("cut_start") or quiet_cut(c["start"], -0.25, 0.08)
+        end = c.get("cut_end") or quiet_cut(c["end"], -0.08, 0.25)
+        dur = end + (TEASER_WIPE if i < len(lines) - 1 else TEASER_CLOSE) - start
         n = round(dur * 30)
         screen, head = f"teaser/{i:02d}-screen.mp4", f"teaser/{i:02d}-head.mp4"
-        run(["ffmpeg", "-ss", f"{start - offs['screen']['offset']:.3f}", "-i", str(src("screen")), "-t", f"{dur:.3f}",
-             "-an", "-vf", f"fps=30,crop={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]},scale={sw}:{sh}:flags=lanczos",
+        # screen recordings store a frame only when the picture changes: decode
+        # from earlier (pre-roll) and hold the last frame, so every clip is full
+        s0 = start - offs["screen"]["offset"]
+        pre = min(60.0, max(0.0, s0))
+        run(["ffmpeg", "-ss", f"{s0 - pre:.3f}", "-t", f"{dur + pre:.3f}", "-i", str(src("screen")),
+             "-an", "-vf", f"fps=30,trim=start={pre:.3f},setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration={dur:.3f},"
+                           f"crop={crop[0]}:{crop[1]}:{crop[2]}:{crop[3]},scale={sw}:{sh}:flags=lanczos",
+             "-frames:v", str(n),
              "-c:v", "libx264", "-crf", "14", "-preset", "fast", "-pix_fmt", "yuv420p", str(PUBLIC / screen)])
         # head: camera frames of the layout's face track, re-cropped larger
         f0 = int(round(start * 30))
@@ -160,6 +240,8 @@ def teaser_clips() -> list[dict]:
         enc = subprocess.Popen([ffmpeg_bin(), "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
                                 "-s", f"{TEASER_HEAD}x{TEASER_HEAD}", "-r", "30", "-i", "-",
                                 "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(WORK / "audio_clean.wav"),
+                                # the sound ends at the cut (silence under the wipe/close)
+                                "-af", f"afade=t=in:d=0.02,afade=t=out:st={end - start - 0.04:.3f}:d=0.04",
                                 "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-crf", "14", "-preset", "fast",
                                 "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k", str(PUBLIC / head)],
                                stdin=subprocess.PIPE)
@@ -249,6 +331,36 @@ def stills(serve: str):
     log(f"wrote out/brand/*.png ({len(STILLS)} cards)")
 
 
+def opening_preview():
+    """out/opening.mp4 – teaser + intro as the video starts, small, for the
+    highlights page (the teaser closes into the intro's first frame)."""
+    parts = [p for p in (BRAND / "teaser.mp4", BRAND / "intro.mp4") if p.exists()]
+    if not parts:
+        return
+    inputs, chain = [], ""
+    for i, p in enumerate(parts):
+        has_a = "audio" in subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
+                                           "-of", "csv=p=0", str(p)], capture_output=True, text=True).stdout
+        inputs += ["-i", str(p)]
+        chain += f"[{i}:v]scale=960:540,setsar=1[v{i}];"
+        if has_a:
+            chain += f"[{i}:a]aresample=48000[a{i}];"
+        else:
+            chain += f"anullsrc=r=48000:cl=stereo,atrim=duration={duration(p):.3f}[a{i}];"
+    n = len(parts)
+    fc = chain + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]"
+    OUT.mkdir(exist_ok=True)
+    run(["ffmpeg", *inputs, "-filter_complex", fc, "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast",
+         "-crf", "24", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
+         str(OUT / "opening.mp4")])
+    log("wrote out/opening.mp4 (teaser + intro preview)")
+
+
+def duration(p: Path) -> float:
+    return float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                 str(p)], capture_output=True, text=True).stdout)
+
+
 def svg():
     js = BRAND / "export.cjs"
     subprocess.run([str(REMOTION / "node_modules/.bin/esbuild"), "src/brand/export.tsx", "--bundle",
@@ -276,5 +388,7 @@ if __name__ == "__main__":
             render(serve, "Outro", BRAND / "outro.mp4")
         if cmd in ("teaser", "all") and props["teaser"]:
             render(serve, "Teaser", BRAND / "teaser.mp4")
+        if cmd in ("teaser", "intro", "all"):
+            opening_preview()
         if cmd == "all":
             svg()
