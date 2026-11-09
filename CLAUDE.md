@@ -17,6 +17,9 @@ Komunikace i všechny texty pro veřejnost jsou **česky**.
 1. `README.md` – jak pipeline pustit, co dělá každý krok, formáty vstupních JSONů.
 2. `STRUCTURE.md` – rozložení složek, co je originál, co ruční vstup a co výstup.
 3. `slon.md` – hlas a pravidla pro texty na web a sociální sítě (krok 13).
+4. `pk status --json` / `pk check --json` – aktuální stav všech akcí a přednášek.
+   Akce, řečníky a hodnoty v configech zakládej a měň přes `pk` (`pk event new`,
+   `pk speaker add`, `pk set`): kontroluje schéma a zachová komentáře.
 
 ## Závazná pravidla
 - **Originály nikdy neupravuj.** Nahrávky, fotky a `talk.md` / `event.md` jsou
@@ -25,7 +28,8 @@ Komunikace i všechny texty pro veřejnost jsou **česky**.
   rozvržení ~10–15 min, reel ~1 min, viz README).
 - **Rozhodnutí, která nejdou snadno vrátit, nejdřív konzultuj** (mazání,
   přejmenování složek, přepis ručně psaných JSONů, nové závislosti).
-- Kód drž přehledný: kroky `pipeline/00_join.py … 13_publish.py` + `run.sh`.
+- Kód drž přehledný: kroky `pipeline/00_join.py … 14_index.py` + `run.sh`.
+  Správa akcí je zvlášť v `pk/` (Rust, nezávislý na pipeline, jen čte jejich soubory).
   Nový krok = nové číslo, záznam v `run.sh` a v README.
 - README.md musí vždy popisovat, jak pipeline pustit na další přednášku.
   Když měníš chování, aktualizuj ho ve stejném kroku.
@@ -38,6 +42,9 @@ Komunikace i všechny texty pro veřejnost jsou **česky**.
   - Ilustrovaná karta akce je jen pro sociální sítě, ve videu není.
 
 ## Klíčové konvence
+- **Rozcestník akce** odkazuj přes lokální Apache: `http://video.localhost/pehapkari/sraz-XX/`
+  (např. `http://video.localhost/pehapkari/sraz-80/`). Vhost `video.localhost` ukazuje
+  na `~/Movies` a je jen pro tenhle počítač.
 - **Jedna časová osa:** všechny časy v ručních JSONech (`edit_manual`, `teaser`,
   `highlights`, `youtube`, `social`, `article`) jsou v čase hlavního audia
   (`audio_clean.wav` = originál WAV). `čas_hlavního_audia = čas_zdroje + offset`
@@ -49,6 +56,9 @@ Komunikace i všechny texty pro veřejnost jsou **česky**.
 - Konfigurace: `talk.md` (řečník, název, fotka, pořadí, youtube, anotace) má
   přednost před `lecture.json` (zdroje, whisper prompt, ořezy). Data akce jsou
   v `../event.md`.
+- Formát `event.md`, `talk.md` a `lecture.json` popisuje `schema/*.schema.json`.
+  Když přidáš nebo změníš klíč v pipeline, uprav i schéma (pk ho kompiluje do sebe,
+  takže pak `cargo install --locked --path pk`).
 - Grafika je **jen z dat** (React/SVG v `pipeline/remotion/src/brand/`), žádné
   exporty z Figmy. `cards.tsx` = karty, `kit.tsx` = barvy, slon, fotka, texty.
 - DaVinci si média pamatuje podle cesty, proto FCPXML odkazuje na kopie
@@ -61,6 +71,7 @@ Komunikace i všechny texty pro veřejnost jsou **česky**.
 Píše je agent nebo uživatel a skripty je nepřepisují:
 `edit_manual.json` (ořezy, Q&A), `teaser.json`, `highlights.json` (`selected`),
 `subs_fixes.json`, `youtube.json`, `social.json`, `article.json`.
+Na úrovni akce je stejný vstup `sraz-XX/promo.json` (texty upoutávek).
 Před přepsáním existujícího se zeptej. Uživatel v nich mohl něco opravit.
 
 ## Stav (2026-10-27)

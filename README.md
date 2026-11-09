@@ -8,8 +8,8 @@ Každý krok jde pustit znovu samostatně.
 Pipeline je sdílená ve složce `agent-cut/`, akce a přednášky leží vedle ní:
 ```
 pehapkari/
-  agent-cut/        pipeline/, tools/, .venv/, README.md, CLAUDE.md (kontext pro agenta),
-                    STRUCTURE.md (rozložení složek), slon.md (hlas textů pro web)
+  agent-cut/        pipeline/, pk/ (správa akcí), schema/, tools/, .venv/, README.md,
+                    CLAUDE.md (kontext pro agenta), STRUCTURE.md (rozložení složek), slon.md (hlas textů pro web)
   resources/        sdílené podklady: bgr/01–12.png (slon podle měsíce), logo/<partner>.svg
   sraz-79/          jedna akce
     event.md        data akce (viz Grafika)
@@ -27,14 +27,16 @@ pipeline/
   03_audio.py        mono→stereo, denoise, −14 LUFS     → work/audio_clean.wav
   04_sync.py         offsety kamery a screenu           → work/offsets.json
   05_transcript.py   přepis (mlx-whisper, časy slov)    → work/transcript.{json,md}
-  06_edit.py         návrh střihu → schválení → FCPXML  → work/edit_plan.md, out/lecture.fcpxml
-  07_highlights.py   kandidáti na reels                 → work/highlights.md
+  06_edit.py         návrh střihu → schválení → FCPXML  → work/edit_plan.md, out/edit_plan.html, out/lecture.fcpxml
+  07_highlights.py   kandidáti na reels                 → work/highlights.md, out/highlights.html
   08_reels.py        render 1080×1920 reels             → out/reels/NN_slug.mp4
+                     (--preview: náhled všech kandidátů → out/reels/preview/)
   09_check.py        automatická kontrola reels         → work/check/report.md
   10_layout.py       rozvržení: pozadí + screen + hlava → work/layout/program.mp4
   11_brand.py        grafika z dat: intro, outro, karty  → work/brand/{intro,outro}.mp4, out/brand/
   12_youtube.py      popis a kapitoly pro YouTube       → out/youtube.md
-  13_publish.py      sociální sítě + článek na web      → out/social.html, out/article.md
+  13_publish.py      sociální sítě + článek na web      → out/social.html, out/article.md (+ .html náhled)
+  14_index.py        rozcestník akce s obrázky a texty  → ../index.html, out/index.html
   remotion/          Remotion šablony grafiky (src/brand/), sdílené pro všechny akce
   run.sh             spouštěč
 tools/               ffmpeg s libass, font, model detekce obličeje (sdílené)
@@ -72,10 +74,35 @@ je doplní `pipeline/run.sh . setup`, kromě písma Hagrid:
 
 Podklady akcí (`resources/`, `sraz-XX/`) a nahrávky leží mimo `agent-cut/` a do gitu nepatří.
 
+## pk – akce, řečníci, stav (Rust)
+`pk` zakládá akce a řečníky, ukazuje stav pipeline u všech přednášek a upravuje
+`event.md`, `talk.md` a `lecture.json`. Každou změnu nejdřív zkontroluje proti
+`schema/*.schema.json`, ručně psané komentáře (`# TODO`) a pořadí klíčů zůstanou.
+Originály nemění, fotku řečníka jen zkopíruje.
+
+```sh
+cargo install --locked --path agent-cut/pk   # znovu po každé změně kódu nebo schémat
+pk                                    # TUI: ↑↓ výběr, e upravit, E/L editor, n nová akce, a řečník
+pk status [--json]                    # akce, přednášky, kroky 0–13 (✓ hotovo, ! zastaralé, · chybí)
+pk check [--json]                     # schéma, chybějící soubory, TODO; exit 1 při chybě
+pk resources                          # ilustrace a loga z resources/
+pk event new 80 --date 2026-11-25 --venue "Impact Hub" --image "image 3" --partner kosik
+pk speaker add 80 --name "Jan Novák" --title "…" --photo ~/Downloads/novak.jpg --abstract "…"
+pk get sraz-79/souki/talk.md youtube
+pk set sraz-79/souki/talk.md youtube=https://www.youtube.com/watch?v=… order=2
+pk set sraz-79/souki/lecture.json projection_crop=null   # hodnota jako JSON, jinak text
+```
+Klíč `partner.logo` = vnořená hodnota, `body` = anotace pod hlavičkou `talk.md`.
+Stav kroků se čte jen z časů souborů ve `work/` a `out/`, nic se nespouští.
+„Zastaralé“ znamená, že ručně psaný vstup (např. `youtube.json`) je novější než výstup.
+Kořen `pehapkari/` se hledá jako složka s `agent-cut/` (jinak `PK_ROOT`).
+Testy: `cd agent-cut/pk && cargo test`.
+
 ## Nová přednáška
 
-0. Před akcí: `sraz-XX/event.md` + pro každou přednášku `sraz-XX/<řečník>/talk.md`
-   a fotka → `run.sh <dir> brand` → upoutávky v `out/brand/` (viz Grafika).
+0. Před akcí: `pk event new …` a `pk speaker add …` (nebo ručně `sraz-XX/event.md`
+   + `sraz-XX/<řečník>/talk.md` a fotka), `pk check` → `run.sh <dir> brand` → upoutávky v `out/brand/` (viz Grafika).
+   Všechno ke sdílení pak najdeš v `sraz-XX/index.html` (viz Rozcestník).
 1. Nahraj nahrávky do složky přednášky (`sraz-XX/novak/`).
 2. Spusť automatické kroky 0–5:
    ```sh
@@ -84,10 +111,10 @@ Podklady akcí (`resources/`, `sraz-XX/`) a nahrávky leží mimo `agent-cut/` a
    První běh vytvoří `lecture.json` autodetekcí (WAV = audio, MKV = screen,
    MOV/MP4 = kamera). **Zkontroluj ho** a doplň případně `whisper_prompt` (jména, technologie)
    a `projection_crop` (viz níže). Pak pusť znovu kroky, kterých se změna týká.
-   Rozdělené nahrávky: `audio` nebo `screen` může být **seznam souborů**
+   Rozdělené nahrávky: `audio`, `screen` i `camera` může být **seznam souborů**
    (viz krok 0).
 3. Střih: do `work/edit_manual.json` zapiš ořez začátku, konce a **Q&A
-   (do záznamu nedáváme)** → `run.sh <dir> plan` → přečti `work/edit_plan.md` → `run.sh <dir> approve`
+   (do záznamu nedáváme)** → `run.sh <dir> plan` → přečti `work/edit_plan.md` (pro lidi `out/edit_plan.html`, odkaz „Návrh střihu“ v detailu řečníka) → `run.sh <dir> approve`
    (nebo `python pipeline/06_edit.py approve --reject=E004,E017`) → `run.sh <dir> brand layout` → teaser (`work/teaser.json`) → `run.sh <dir> brand fcpxml`.
 4. Reels: vyber pasáže (viz níže) → `run.sh <dir> 7 8 9`.
 5. YouTube: `run.sh <dir> ytsentences` (věty v časech výsledného videa, tj. včetně
@@ -95,7 +122,7 @@ Podklady akcí (`resources/`, `sraz-XX/`) a nahrávky leží mimo `agent-cut/` a
    audia) → `run.sh <dir> youtube` → `out/youtube.md`. Časy kapitol sedí na video
    vyexportované z `out/lecture.fcpxml`; při ručních změnách střihu v Resolve pusť znovu.
 6. Po nahrání na YouTube: odkaz do `talk.md` (`youtube:`) → napiš `work/social.json`
-   a `work/article.json` → `run.sh <dir> publish` → `out/social.html` + `out/article.md`
+   a `work/article.json` → `run.sh <dir> publish` → `out/social.html` + `out/article.md` (+ `article.html`)
    (viz Publikace).
 
 Časový odhad pro 45min přednášku na M1 Pro: probe 1 s, proxy ~7 min,
@@ -108,12 +135,17 @@ audio ~4 min, sync ~1,5 min, přepis (large-v3) ~15–20 min, každý reel ~1 mi
 obrazovky přerušený pauzou → `"screen": ["část1.mov", "část2.mov"]`: každá
 část se umístí na osu hlavního audia korelací zvuku, mezera drží poslední
 snímek a vše se uloží jako jedno 30fps video `work/joined/screen.mp4`.
+Stejně funguje `"camera": ["IMG_0776.MOV", "IMG_0777.MOV"]` → `work/joined/camera.mp4`
+(telefon záznam rozdělil). Části se oříznou na rozsah hlavního audia, takže
+kamera, která zachytila i předchozí přednášku, přispěje jen svým koncem.
 Ostatní kroky pak berou spojené soubory automaticky.
 
 **Sync (04).** Konvence: `čas_hlavního_audia = čas_zdroje + offset`.
-Kamera se hledá křížovou korelací zvuku (16 kHz, pásmo 200–4000 Hz, prvních
-5 min proti celému hlavnímu audiu) a ověřuje na dvou dalších místech; z toho
-vychází i drift hodin (ppm). Pokud má zdroj tichou stopu (OBS bez zvuku),
+Kamera se hledá křížovou korelací zvuku (16 kHz, pásmo 200–4000 Hz, 5 min
+ze začátku, středu a konce zdroje proti celému hlavnímu audiu, vyhraje
+nejsilnější shoda). Pak se změří 7 minutových oken přes celý překryv a offset
+i drift hodin (ppm) se proloží přímkou jen jimi; okna dál než 1 snímek od mediánu
+nebo se slabou shodou se vynechají (globální odhad bývá o pár desítek ms vedle). Pokud má zdroj tichou stopu (OBS bez zvuku),
 použije se **vizuální sync**: signál „změny obrazu“ screenu se koreluje
 s výřezem projekce v kameře (`projection_crop` v `lecture.json`, souřadnice
 ve 720p proxy `w:h:x:y`; když je `null`, bere se celý obraz). Kamera musí
@@ -154,16 +186,24 @@ středu souboru, takže drift hodin se rozdělí na ± polovinu.
 **Highlights (07).** `run.sh <dir> sentences` vypíše věty s časy do
 `work/sentences.md`. Výběr se zapíše do `work/highlights.json`
 (`id, slug, start, end, hook, why, title, caption, keywords`) a krok 7 ho
-přichytí na hranice slov, ověří 30–60 s a vygeneruje `highlights.md`.
+přichytí na hranice slov, ověří 30–60 s a vygeneruje `highlights.md`
+a pro lidi `out/highlights.html` (i s větami teaseru z `teaser.json`, odkaz
+„Pasáže na reels a teaser“ v detailu řečníka; hotové reels přehraje).
+Náhled všech kandidátů: `run.sh <dir> preview` (≈25 s na pasáž) vyrenderuje
+stejnou skladbu jako krok 8 v polovičním rozlišení do `out/reels/preview/H{n}_slug.mp4`
+a stránka pasáží je u každé karty přehraje (`highlights.json` nemění).
 Ke zvoleným pasážím doplň `"selected": true` (volitelně `"layout": "split"|"full"`,
 `"zoom"`).
 
-**Reels (08).** Kamera nahoře 1080×960 (sledování obličeje YuNet, plynulý
-pohyb, při malém pohybu statický ořez), pod ní screen (černé okraje OBS se
+**Reels (08).** Kamera nahoře 1080×960 (sledování obličeje YuNet ve stylu
+kameramana: ořez stojí, dokud řečník nevyjde z klidové zóny ±22 % šířky, pak
+jeden plynulý přejezd 0,6–1,4 s tam, kde se zastaví; `cameraman()` v 08_reels.py), pod ní screen (čte se s 60s předjezdem, protože nahrávka
+obrazovky ukládá snímky jen při změně; černé okraje OBS se
 oříznou automaticky přes cropdetect → `work/screen_crop.json`), dole pruh
 v barvě akce se jménem řečníka. Když screen pro danou pasáž chybí nebo je
 prázdný (málo hran na slajdu), kamera jde přes celou plochu (ořez 80 % výšky, `"zoom"`). Titulky ASS: Montserrat ExtraBold 76 px,
-max. 2 řádky lámané podle skutečné šířky textu, klíčová slova (`keywords`)
+max. 2 řádky lámané podle skutečné šířky textu (číslo zůstává s dalším slovem,
+jednopísmenná předložka/spojka nezůstává na konci řádku – stejně jako v grafice, `tokens()` v kit.tsx), klíčová slova (`keywords`)
 a čísla žlutě. Audio z `audio_clean.wav`, offset kamery se počítá pro střed
 reelu včetně driftu.
 
@@ -207,8 +247,8 @@ partner:
 ```
 `sraz-XX/<řečník>/talk.md`: `speaker`, `title`, `photo` (běžná fotka – obličej se
 najde sám a drží se v každém ořezu), `order` (pořadí v programu), `youtube`
-(odkaz na nahrané video, pro krok 13); text pod
-hlavičkou = anotace. `speaker`/`title` odtud bere i zbytek pipeline (přednost
+(odkaz na nahrané video, pro krok 13), `bio` (nepovinný krátký popis řečníka,
+pipeline ho zatím nepoužívá); text pod hlavičkou = anotace. `speaker`/`title` odtud bere i zbytek pipeline (přednost
 před `lecture.json`).
 
 `run.sh <dir> brand` vyrobí (~30 s):
@@ -222,9 +262,14 @@ před `lecture.json`).
   Na konci se lišty zavřou do panelu se slonem = první snímek intra (plynule navazuje).
   Výběr do `work/teaser.json` (`[{"start", "end", "text"}]`, čas hlavního audia,
   `end` = konec posledního slova; věty, které zaujmou a donutí dokoukat celé
-  video). Skládá se přímo ze zdrojů (screen + kamera se sledováním obličeje z kroku 10).
+  video). Řez se sám posune do ticha mezi slovy (≥ 60 ms pod −32 dB, ne přes
+  sousední slovo, krátká pauza uvnitř slova ho nespletou); když se netrefí, zadej
+  u věty přesný čas `cut_start` / `cut_end` (sekundy hlavního audia). Skládá se přímo ze zdrojů (screen + kamera se sledováním obličeje z kroku 10).
   Kamera 720p: velké okno snese řečníka, který je v záběru blízko; vzdálený řečník
   (malý obličej) bude měkčí.
+- `out/opening.mp4` – náhled začátku videa (teaser + znělka, 960×540) pro stránku
+  pasáží; vzniká s `teaser`/`intro`. Výřezy slajdů pro teaser se čtou s předjezdem
+  (nahrávka obrazovky z Macu ukládá snímky jen při změně).
 - `work/brand/outro.mp4` (10,5 s): pruhy se zatáhnou, slon + „Díky za sledování“
   + logo partnera, pak prázdné pozadí na 5,7 s pro koncové karty YouTube
 - `work/brand/video-background@2x.png` – pozadí pro rozvržení (10)
@@ -262,6 +307,19 @@ převede na čas ve videu na YouTube (odkazy `youtu.be/<id>?t=…`).
   `event`, `date`, `youtube`, `youtube_id`, `duration`, `description`, `chapters`
   s časy pro přehrávač), perex, sekce s odkazem na čas ve videu, „Co si odnést“.
   Sekce volně spojují kapitoly z `youtube.json`.
+  Vedle vznikne `out/article.html`, náhled k rychlému čtení: vložený přehrávač,
+  kapitoly a odkazy ▶ v textu přeskočí na dané místo ve videu, front matter je dole.
 
 Dílčí kroky: `python pipeline/13_publish.py social|social-text|article`
 (`social-text` = jen texty, obrázky zůstanou). Render obrázků ~10 s na pointu.
+
+**Rozcestník (14).** `sraz-XX/index.html` má na jednom místě pozvánku a všechny
+přednášky: obrázky z `out/brand/`, texty s tlačítkem Kopírovat a odkazy na to, co
+už existuje (YouTube, `social.html`, `youtube.html`, článek, FCPXML). Každý řečník
+má navíc vlastní stránku `out/index.html`, kde jsou i jednotlivé reels. Po datu
+akce se upoutávky sbalí a do popředí jdou výstupy přednášek.
+- Kroky 11, 12 a 13 ho přegenerují samy. Po ruční změně `event.md`, `talk.md` nebo
+  `promo.json` pusť `run.sh sraz-XX index` (funguje i ze složky přednášky, hotové je hned).
+- Texty upoutávek se skládají z `event.md` a `talk.md`, anotace se doplní sama.
+  Ruční znění patří do nepovinného `sraz-XX/promo.json`, hodnota nahradí celý text:
+  `{"hashtags": "#php #pehapkari", "event": "…", "talks": {"votocek": "…"}}`.
